@@ -2,7 +2,7 @@ const AWS = require("aws-sdk")
 
 // Configure AWS SDK
 const ec2 = new AWS.EC2({
-    region: "ap-south-1a", // Replace with your desired region
+    region: "us-east-1", // Replace with your desired region
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
 })
