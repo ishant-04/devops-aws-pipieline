@@ -24,6 +24,8 @@ const {
     AttachRolePolicyCommand,
     CreateInstanceProfileCommand,
     AddRoleToInstanceProfileCommand,
+    GetInstanceProfileCommand,
+    waitUntilInstanceProfileExists,
 } = require("@aws-sdk/client-iam")
 
 // Configure AWS SDK clients
@@ -189,9 +191,11 @@ async function createResources() {
 }
 
 async function createIamRole() {
+    const roleName = "EC2SSMRole"
+    const instanceProfileName = "EC2SSMInstanceProfile"
+
     try {
         // 1. Create IAM Role
-        const roleName = "EC2SSMRole"
         const assumeRolePolicyDocument = JSON.stringify({
             Version: "2012-10-17",
             Statement: [
@@ -223,16 +227,35 @@ async function createIamRole() {
             })
         )
         console.log(`Policy attached to IAM Role ${roleName}`)
+    } catch (error) {
+        if (error.name === "EntityAlreadyExists") {
+            console.log(`IAM Role ${roleName} already exists`)
+        } else {
+            console.error("Failed to create IAM Role:", error)
+            process.exit(1)
+        }
+    }
 
+    try {
         // 3. Create Instance Profile
-        const instanceProfileName = "EC2SSMInstanceProfile"
         await iamClient.send(
             new CreateInstanceProfileCommand({
                 InstanceProfileName: instanceProfileName,
             })
         )
         console.log(`Instance Profile ${instanceProfileName} created`)
+    } catch (error) {
+        if (error.name === "EntityAlreadyExists") {
+            console.log(
+                `Instance Profile ${instanceProfileName} already exists`
+            )
+        } else {
+            console.error("Failed to create Instance Profile:", error)
+            process.exit(1)
+        }
+    }
 
+    try {
         // 4. Add Role to Instance Profile
         await iamClient.send(
             new AddRoleToInstanceProfileCommand({
@@ -243,17 +266,39 @@ async function createIamRole() {
         console.log(
             `IAM Role ${roleName} added to Instance Profile ${instanceProfileName}`
         )
-
-        return instanceProfileName
     } catch (error) {
-        if (error.name === "EntityAlreadyExists") {
-            console.log("IAM Role or Instance Profile already exists")
-            return "EC2SSMInstanceProfile" // Assuming the existing instance profile name
+        if (
+            error.name === "LimitExceeded" ||
+            error.name === "EntityAlreadyExists"
+        ) {
+            console.log(
+                `Role ${roleName} is already associated with the Instance Profile`
+            )
         } else {
-            console.error("Failed to create IAM Role:", error)
+            console.error("Failed to add Role to Instance Profile:", error)
             process.exit(1)
         }
     }
+
+    // Wait until the Instance Profile is available
+    const params = {
+        InstanceProfileName: instanceProfileName,
+    }
+    await waitUntilInstanceProfileExists(
+        { client: iamClient, maxWaitTime: 30 },
+        params
+    )
+    console.log(`Instance Profile ${instanceProfileName} is now available`)
+
+    // Get the Instance Profile ARN
+    const getInstanceProfileResponse = await iamClient.send(
+        new GetInstanceProfileCommand({
+            InstanceProfileName: instanceProfileName,
+        })
+    )
+    const instanceProfileArn = getInstanceProfileResponse.InstanceProfile.Arn
+
+    return instanceProfileArn
 }
 
 async function runSSMCommands(instanceId) {
@@ -285,19 +330,18 @@ async function runSSMCommands(instanceId) {
 async function createEC2Instance(
     subnetId,
     securityGroupId,
-    instanceProfileName
+    instanceProfileArn
 ) {
     try {
         const amiId = await getLatestAmiId()
 
         const params = {
             ImageId: amiId,
-            InstanceType: "t2.micro",
+            InstanceType: "t3.micro",
             MinCount: 1,
             MaxCount: 1,
-            // KeyName: "your-key-pair-name",
             IamInstanceProfile: {
-                Name: instanceProfileName,
+                Arn: instanceProfileArn,
             },
             NetworkInterfaces: [
                 {
@@ -339,11 +383,11 @@ echo "Hello World from $(hostname -f)" > /var/www/html/index.html
 
 async function main() {
     const { subnetId, securityGroupId } = await createResources()
-    const instanceProfileName = await createIamRole()
+    const instanceProfileArn = await createIamRole()
     const instanceId = await createEC2Instance(
         subnetId,
         securityGroupId,
-        instanceProfileName
+        instanceProfileArn
     )
 
     console.log("Waiting for instance to be in running state...")
