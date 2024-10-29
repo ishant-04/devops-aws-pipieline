@@ -52,8 +52,7 @@ async function getLatestAmiId() {
 
 async function getOrCreateSubnet(vpcId) {
     try {
-        const desiredCidrBlock = "10.0.1.0/24"
-        // const desiredAvailabilityZone = "ap-south-1a"
+        const desiredCidrBlock = "10.0.1.0/24" // Your required CIDR block
 
         // Describe subnets in the VPC
         const data = await ec2Client.send(
@@ -67,11 +66,6 @@ async function getOrCreateSubnet(vpcId) {
                         Name: "cidr-block",
                         Values: [desiredCidrBlock],
                     },
-                    // Uncomment the following if you want to filter by availability zone
-                    // {
-                    //   Name: 'availability-zone',
-                    //   Values: [desiredAvailabilityZone],
-                    // },
                     {
                         Name: "tag:Name",
                         Values: ["MySubnet"],
@@ -85,8 +79,6 @@ async function getOrCreateSubnet(vpcId) {
             const subnet = data.Subnets[0]
             const subnetId = subnet.SubnetId
             console.log(`Existing Subnet found with ID: ${subnetId}`)
-
-            // Additional checks can be added here if needed
             return subnetId
         } else {
             // No matching subnet found, create a new one
@@ -94,7 +86,6 @@ async function getOrCreateSubnet(vpcId) {
                 new CreateSubnetCommand({
                     VpcId: vpcId,
                     CidrBlock: desiredCidrBlock,
-                    // AvailabilityZone: desiredAvailabilityZone,
                     TagSpecifications: [
                         {
                             ResourceType: "subnet",
@@ -253,8 +244,8 @@ async function createIamRole() {
     const roleName = "EC2SSMRole"
     const instanceProfileName = "EC2SSMInstanceProfile"
 
+    // 1. Create IAM Role
     try {
-        // 1. Create IAM Role
         const assumeRolePolicyDocument = JSON.stringify({
             Version: "2012-10-17",
             Statement: [
@@ -276,8 +267,21 @@ async function createIamRole() {
             })
         )
         console.log(`IAM Role ${roleName} created`)
+    } catch (error) {
+        if (
+            error.name === "EntityAlreadyExistsException" ||
+            error.name === "EntityAlreadyExists" ||
+            (error.Code && error.Code === "EntityAlreadyExists")
+        ) {
+            console.log(`IAM Role ${roleName} already exists`)
+        } else {
+            console.error("Failed to create IAM Role:", error)
+            process.exit(1)
+        }
+    }
 
-        // 2. Attach Policy to Role
+    // 2. Attach Policy to Role
+    try {
         await iamClient.send(
             new AttachRolePolicyCommand({
                 RoleName: roleName,
@@ -287,16 +291,20 @@ async function createIamRole() {
         )
         console.log(`Policy attached to IAM Role ${roleName}`)
     } catch (error) {
-        if (error.name === "EntityAlreadyExists") {
-            console.log(`IAM Role ${roleName} already exists`)
+        if (
+            error.name === "EntityAlreadyExistsException" ||
+            error.name === "EntityAlreadyExists" ||
+            (error.Code && error.Code === "EntityAlreadyExists")
+        ) {
+            console.log(`Policy already attached to IAM Role ${roleName}`)
         } else {
-            console.error("Failed to create IAM Role:", error)
+            console.error("Failed to attach policy to IAM Role:", error)
             process.exit(1)
         }
     }
 
+    // 3. Create Instance Profile
     try {
-        // 3. Create Instance Profile
         await iamClient.send(
             new CreateInstanceProfileCommand({
                 InstanceProfileName: instanceProfileName,
@@ -304,7 +312,11 @@ async function createIamRole() {
         )
         console.log(`Instance Profile ${instanceProfileName} created`)
     } catch (error) {
-        if (error.name === "EntityAlreadyExists") {
+        if (
+            error.name === "EntityAlreadyExistsException" ||
+            error.name === "EntityAlreadyExists" ||
+            (error.Code && error.Code === "EntityAlreadyExists")
+        ) {
             console.log(
                 `Instance Profile ${instanceProfileName} already exists`
             )
@@ -314,8 +326,8 @@ async function createIamRole() {
         }
     }
 
+    // 4. Add Role to Instance Profile
     try {
-        // 4. Add Role to Instance Profile
         await iamClient.send(
             new AddRoleToInstanceProfileCommand({
                 InstanceProfileName: instanceProfileName,
@@ -323,12 +335,14 @@ async function createIamRole() {
             })
         )
         console.log(
-            `IAM Role ${roleName} added to Instance Profile ${instanceProfileName}`
+            `Role ${roleName} added to Instance Profile ${instanceProfileName}`
         )
     } catch (error) {
         if (
             error.name === "LimitExceeded" ||
-            error.name === "EntityAlreadyExists"
+            error.name === "EntityAlreadyExistsException" ||
+            error.name === "EntityAlreadyExists" ||
+            (error.Code && error.Code === "EntityAlreadyExists")
         ) {
             console.log(
                 `Role ${roleName} is already associated with the Instance Profile`
@@ -339,7 +353,7 @@ async function createIamRole() {
         }
     }
 
-    // Wait until the Instance Profile is available
+    // 5. Wait for the Instance Profile to be available
     const params = {
         InstanceProfileName: instanceProfileName,
     }
@@ -349,7 +363,7 @@ async function createIamRole() {
     )
     console.log(`Instance Profile ${instanceProfileName} is now available`)
 
-    // Get the Instance Profile ARN
+    // 6. Get the Instance Profile ARN
     const getInstanceProfileResponse = await iamClient.send(
         new GetInstanceProfileCommand({
             InstanceProfileName: instanceProfileName,
