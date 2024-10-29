@@ -32,8 +32,8 @@ const {
 const region = "us-east-1"
 const ec2Client = new EC2Client({ region })
 const ssmClient = new SSMClient({ region })
-
 const iamClient = new IAMClient({ region })
+const { DescribeVpcsCommand } = require("@aws-sdk/client-ec2")
 
 async function getLatestAmiId() {
     try {
@@ -51,20 +51,28 @@ async function getLatestAmiId() {
 
 async function createResources() {
     try {
-        // 1. Create VPC
-        const vpcData = await ec2Client.send(
-            new CreateVpcCommand({
-                CidrBlock: "10.0.0.0/16",
-                TagSpecifications: [
-                    {
-                        ResourceType: "vpc",
-                        Tags: [{ Key: "Name", Value: "MyVPC" }],
-                    },
-                ],
-            })
-        )
-        const vpcId = vpcData.Vpc.VpcId
-        console.log(`VPC created with ID: ${vpcId}`)
+        // 1. VPC
+        let vpcId = await getExistingVpcId()
+
+        if (!vpcId) {
+            // Create VPC if it doesn't exist
+            const vpcData = await ec2Client.send(
+                new CreateVpcCommand({
+                    CidrBlock: "10.0.0.0/16",
+                    TagSpecifications: [
+                        {
+                            ResourceType: "vpc",
+                            Tags: [{ Key: "Name", Value: "MyVPC" }],
+                        },
+                    ],
+                })
+            )
+            vpcId = vpcData.Vpc.VpcId
+            console.log(`VPC created with ID: ${vpcId}`)
+            // You may need to wait until the VPC is available
+        } else {
+            console.log(`Reusing existing VPC with ID: ${vpcId}`)
+        }
 
         // 2. Create Subnet
         const subnetData = await ec2Client.send(
@@ -323,6 +331,31 @@ async function runSSMCommands(instanceId) {
         )
     } catch (error) {
         console.error("Failed to run SSM command:", error)
+        process.exit(1)
+    }
+}
+
+async function getExistingVpcId() {
+    try {
+        const data = await ec2Client.send(
+            new DescribeVpcsCommand({
+                Filters: [
+                    {
+                        Name: "tag:Name",
+                        Values: ["MyVPC"],
+                    },
+                ],
+            })
+        )
+        if (data.Vpcs.length > 0) {
+            const vpcId = data.Vpcs[0].VpcId
+            console.log(`Existing VPC found with ID: ${vpcId}`)
+            return vpcId
+        } else {
+            return null
+        }
+    } catch (error) {
+        console.error("Failed to describe VPCs:", error)
         process.exit(1)
     }
 }
