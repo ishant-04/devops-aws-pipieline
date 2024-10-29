@@ -11,7 +11,7 @@ async function createEC2Instance() {
     try {
         // Specify the parameters for the new instance
         const params = {
-            ImageId: "ami-0846b753e2af0da6e", // Amazon Linux 2 AMI (replace as needed)
+            ImageId: "ami-0e0e417dfa2028266", // Amazon Linux 2 AMI (replace as needed)
             InstanceType: "t2.micro",
             MinCount: 1,
             MaxCount: 1,
