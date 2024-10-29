@@ -12,12 +12,26 @@ const {
     RunInstancesCommand,
     CreateTagsCommand,
 } = require("@aws-sdk/client-ec2")
-const { SSMClient, GetParameterCommand } = require("@aws-sdk/client-ssm")
+const {
+    SSMClient,
+    GetParameterCommand,
+    SendCommandCommand,
+} = require("@aws-sdk/client-ssm")
+
+const {
+    IAMClient,
+    CreateRoleCommand,
+    AttachRolePolicyCommand,
+    CreateInstanceProfileCommand,
+    AddRoleToInstanceProfileCommand,
+} = require("@aws-sdk/client-iam")
 
 // Configure AWS SDK clients
 const region = "us-east-1"
 const ec2Client = new EC2Client({ region })
 const ssmClient = new SSMClient({ region })
+
+const iamClient = new IAMClient({ region })
 
 async function getLatestAmiId() {
     try {
@@ -174,7 +188,105 @@ async function createResources() {
     }
 }
 
-async function createEC2Instance(subnetId, securityGroupId) {
+async function createIamRole() {
+    try {
+        // 1. Create IAM Role
+        const roleName = "EC2SSMRole"
+        const assumeRolePolicyDocument = JSON.stringify({
+            Version: "2012-10-17",
+            Statement: [
+                {
+                    Effect: "Allow",
+                    Principal: {
+                        Service: "ec2.amazonaws.com",
+                    },
+                    Action: "sts:AssumeRole",
+                },
+            ],
+        })
+
+        await iamClient.send(
+            new CreateRoleCommand({
+                RoleName: roleName,
+                AssumeRolePolicyDocument: assumeRolePolicyDocument,
+                Description: "Role for EC2 to access SSM",
+            })
+        )
+        console.log(`IAM Role ${roleName} created`)
+
+        // 2. Attach Policy to Role
+        await iamClient.send(
+            new AttachRolePolicyCommand({
+                RoleName: roleName,
+                PolicyArn:
+                    "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
+            })
+        )
+        console.log(`Policy attached to IAM Role ${roleName}`)
+
+        // 3. Create Instance Profile
+        const instanceProfileName = "EC2SSMInstanceProfile"
+        await iamClient.send(
+            new CreateInstanceProfileCommand({
+                InstanceProfileName: instanceProfileName,
+            })
+        )
+        console.log(`Instance Profile ${instanceProfileName} created`)
+
+        // 4. Add Role to Instance Profile
+        await iamClient.send(
+            new AddRoleToInstanceProfileCommand({
+                InstanceProfileName: instanceProfileName,
+                RoleName: roleName,
+            })
+        )
+        console.log(
+            `IAM Role ${roleName} added to Instance Profile ${instanceProfileName}`
+        )
+
+        return instanceProfileName
+    } catch (error) {
+        if (error.name === "EntityAlreadyExists") {
+            console.log("IAM Role or Instance Profile already exists")
+            return "EC2SSMInstanceProfile" // Assuming the existing instance profile name
+        } else {
+            console.error("Failed to create IAM Role:", error)
+            process.exit(1)
+        }
+    }
+}
+
+async function runSSMCommands(instanceId) {
+    try {
+        const command = new SendCommandCommand({
+            InstanceIds: [instanceId],
+            DocumentName: "AWS-RunShellScript",
+            Parameters: {
+                commands: [
+                    "sudo yum install -y git",
+                    "sudo amazon-linux-extras install -y docker",
+                    "sudo service docker start",
+                    "sudo usermod -a -G docker ec2-user",
+                    'echo "Docker and Git installed" >> /home/ec2-user/setup.log',
+                ],
+            },
+        })
+
+        const response = await ssmClient.send(command)
+        console.log(
+            `SSM Command sent. Command ID: ${response.Command.CommandId}`
+        )
+    } catch (error) {
+        console.error("Failed to run SSM command:", error)
+        process.exit(1)
+    }
+}
+
+async function createEC2Instance(
+    subnetId,
+    securityGroupId,
+    instanceProfileName
+) {
     try {
         const amiId = await getLatestAmiId()
 
@@ -184,6 +296,9 @@ async function createEC2Instance(subnetId, securityGroupId) {
             MinCount: 1,
             MaxCount: 1,
             // KeyName: "your-key-pair-name",
+            IamInstanceProfile: {
+                Name: instanceProfileName,
+            },
             NetworkInterfaces: [
                 {
                     DeviceIndex: 0,
@@ -224,11 +339,17 @@ echo "Hello World from $(hostname -f)" > /var/www/html/index.html
 
 async function main() {
     const { subnetId, securityGroupId } = await createResources()
-    const instanceId = await createEC2Instance(subnetId, securityGroupId)
+    const instanceProfileName = await createIamRole()
+    const instanceId = await createEC2Instance(
+        subnetId,
+        securityGroupId,
+        instanceProfileName
+    )
 
-    // Additional steps (e.g., wait for instance to be ready) can be added here
+    console.log("Waiting for instance to be in running state...")
+    await new Promise((resolve) => setTimeout(resolve, 60000)) // Wait for 60 seconds
 
-    // For Task 3, we'll invoke configuration management after this
+    await runSSMCommands(instanceId)
 }
 
 main()
