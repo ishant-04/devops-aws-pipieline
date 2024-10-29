@@ -11,6 +11,7 @@ const {
     AuthorizeSecurityGroupIngressCommand,
     RunInstancesCommand,
     CreateTagsCommand,
+    DescribeSubnetsCommand,
 } = require("@aws-sdk/client-ec2")
 const {
     SSMClient,
@@ -29,7 +30,7 @@ const {
 } = require("@aws-sdk/client-iam")
 
 // Configure AWS SDK clients
-const region = "us-east-1"
+const region = "ap-south-1"
 const ec2Client = new EC2Client({ region })
 const ssmClient = new SSMClient({ region })
 const iamClient = new IAMClient({ region })
@@ -45,6 +46,69 @@ async function getLatestAmiId() {
         return parameter.Parameter.Value
     } catch (error) {
         console.error("Failed to get AMI ID:", error)
+        process.exit(1)
+    }
+}
+
+async function getOrCreateSubnet(vpcId) {
+    try {
+        const desiredCidrBlock = "10.0.1.0/24"
+        // const desiredAvailabilityZone = "ap-south-1a"
+
+        // Describe subnets in the VPC
+        const data = await ec2Client.send(
+            new DescribeSubnetsCommand({
+                Filters: [
+                    {
+                        Name: "vpc-id",
+                        Values: [vpcId],
+                    },
+                    {
+                        Name: "cidr-block",
+                        Values: [desiredCidrBlock],
+                    },
+                    // Uncomment the following if you want to filter by availability zone
+                    // {
+                    //   Name: 'availability-zone',
+                    //   Values: [desiredAvailabilityZone],
+                    // },
+                    {
+                        Name: "tag:Name",
+                        Values: ["MySubnet"],
+                    },
+                ],
+            })
+        )
+
+        if (data.Subnets.length > 0) {
+            // A subnet matching the desired configuration exists
+            const subnet = data.Subnets[0]
+            const subnetId = subnet.SubnetId
+            console.log(`Existing Subnet found with ID: ${subnetId}`)
+
+            // Additional checks can be added here if needed
+            return subnetId
+        } else {
+            // No matching subnet found, create a new one
+            const subnetData = await ec2Client.send(
+                new CreateSubnetCommand({
+                    VpcId: vpcId,
+                    CidrBlock: desiredCidrBlock,
+                    // AvailabilityZone: desiredAvailabilityZone,
+                    TagSpecifications: [
+                        {
+                            ResourceType: "subnet",
+                            Tags: [{ Key: "Name", Value: "MySubnet" }],
+                        },
+                    ],
+                })
+            )
+            const subnetId = subnetData.Subnet.SubnetId
+            console.log(`Subnet created with ID: ${subnetId}`)
+            return subnetId
+        }
+    } catch (error) {
+        console.error("Failed to get or create Subnet:", error)
         process.exit(1)
     }
 }
@@ -75,20 +139,7 @@ async function createResources() {
         }
 
         // 2. Create Subnet
-        const subnetData = await ec2Client.send(
-            new CreateSubnetCommand({
-                VpcId: vpcId,
-                CidrBlock: "10.0.1.0/24",
-                TagSpecifications: [
-                    {
-                        ResourceType: "subnet",
-                        Tags: [{ Key: "Name", Value: "MySubnet" }],
-                    },
-                ],
-            })
-        )
-        const subnetId = subnetData.Subnet.SubnetId
-        console.log(`Subnet created with ID: ${subnetId}`)
+        const subnetId = await getOrCreateSubnet(vpcId)
 
         // 3. Create Internet Gateway
         const igwData = await ec2Client.send(
