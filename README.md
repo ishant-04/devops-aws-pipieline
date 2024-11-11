@@ -1,4 +1,4 @@
-# devops-aws-pipieline
+# devops pipeline : CI CD pipeline to automatically deploy the app whenever there is a new commit on an AWS EC2 instance using Github Actions.
 #test1
 To test pipeline 
 
